@@ -1,16 +1,38 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
 import { Crown, RefreshCw, Sparkles, Check } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { formatQuota } from '@/lib/format'
-import { cn } from '@/lib/utils'
-import { useStatus } from '@/hooks/use-status'
+
+import {
+  StatusBadge,
+  dotColorMap,
+  textColorMap,
+} from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -24,11 +46,6 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import {
-  StatusBadge,
-  dotColorMap,
-  textColorMap,
-} from '@/components/status-badge'
-import {
   getPublicPlans,
   getSelfSubscriptionFull,
   updateBillingPreference,
@@ -39,11 +56,16 @@ import type {
   PlanRecord,
   UserSubscriptionRecord,
 } from '@/features/subscriptions/types'
+import { formatQuota } from '@/lib/format'
+import { cn } from '@/lib/utils'
+
 import type { PaymentMethod, TopupInfo } from '../types'
 
 interface SubscriptionPlansCardProps {
   topupInfo: TopupInfo | null
   onAvailabilityChange?: (available: boolean) => void
+  userQuota?: number
+  onPurchaseSuccess?: () => void | Promise<void>
 }
 
 function getEpayMethods(payMethods: PaymentMethod[] = []): PaymentMethod[] {
@@ -52,12 +74,31 @@ function getEpayMethods(payMethods: PaymentMethod[] = []): PaymentMethod[] {
   )
 }
 
+function getBillingPreferenceLabel(
+  preference: string,
+  t: (key: string) => string
+): string {
+  switch (preference) {
+    case 'subscription_first':
+      return t('Subscription First')
+    case 'wallet_first':
+      return t('Wallet First')
+    case 'subscription_only':
+      return t('Subscription Only')
+    case 'wallet_only':
+      return t('Wallet Only')
+    default:
+      return preference
+  }
+}
+
 export function SubscriptionPlansCard({
   topupInfo,
   onAvailabilityChange,
+  userQuota,
+  onPurchaseSuccess,
 }: SubscriptionPlansCardProps) {
   const { t } = useTranslation()
-  const { status } = useStatus()
 
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [activeSubscriptions, setActiveSubscriptions] = useState<
@@ -74,9 +115,10 @@ export function SubscriptionPlansCard({
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<PlanRecord | null>(null)
 
-  const enableStripe = !!status?.enable_stripe_topup
+  const enableStripe = !!topupInfo?.enable_stripe_topup
   const enableCreem = !!topupInfo?.enable_creem_topup
-  const enableOnlineTopUp = !!status?.enable_online_topup
+  const enableWaffoPancake = !!topupInfo?.enable_waffo_pancake_topup
+  const enableOnlineTopUp = !!topupInfo?.enable_online_topup
   const epayMethods = useMemo(
     () => getEpayMethods(topupInfo?.pay_methods),
     [topupInfo?.pay_methods]
@@ -195,7 +237,7 @@ export function SubscriptionPlansCard({
 
   if (loading) {
     return (
-      <Card className='gap-0 overflow-hidden py-0'>
+      <Card data-card-hover='false' className='gap-0 overflow-hidden py-0'>
         <CardHeader className='border-b p-3 !pb-3 sm:p-5 sm:!pb-5'>
           <Skeleton className='h-6 w-32' />
         </CardHeader>
@@ -219,8 +261,9 @@ export function SubscriptionPlansCard({
     <>
       <TitledCard
         title={t('Subscription Plans')}
-        description={t('Purchase a plan to enjoy model benefits')}
+        description={t('Subscribe to a plan for model access')}
         icon={<Crown className='h-4 w-4' />}
+        disableHoverEffect
         contentClassName='space-y-4 sm:space-y-5'
       >
         {/* My subscriptions & billing preference */}
@@ -260,27 +303,65 @@ export function SubscriptionPlansCard({
             </div>
             <div className='flex w-full items-center gap-2 sm:w-auto'>
               <Select
+                items={[
+                  {
+                    value: 'subscription_first',
+                    label: (
+                      <>
+                        {getBillingPreferenceLabel('subscription_first', t)}
+                        {disablePref ? ` (${t('No Active')})` : ''}
+                      </>
+                    ),
+                  },
+                  {
+                    value: 'wallet_first',
+                    label: getBillingPreferenceLabel('wallet_first', t),
+                  },
+                  {
+                    value: 'subscription_only',
+                    label: (
+                      <>
+                        {getBillingPreferenceLabel('subscription_only', t)}
+                        {disablePref ? ` (${t('No Active')})` : ''}
+                      </>
+                    ),
+                  },
+                  {
+                    value: 'wallet_only',
+                    label: getBillingPreferenceLabel('wallet_only', t),
+                  },
+                ]}
                 value={displayPref}
                 onValueChange={(v) => v !== null && handlePreferenceChange(v)}
               >
                 <SelectTrigger className='h-8 flex-1 text-xs sm:w-[140px] sm:flex-none'>
-                  <SelectValue />
+                  <SelectValue>
+                    {getBillingPreferenceLabel(displayPref, t)}
+                  </SelectValue>
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='subscription_first' disabled={disablePref}>
-                    {t('Subscription First')}
-                    {disablePref ? ` (${t('No Active')})` : ''}
-                  </SelectItem>
-                  <SelectItem value='wallet_first'>
-                    {t('Wallet First')}
-                  </SelectItem>
-                  <SelectItem value='subscription_only' disabled={disablePref}>
-                    {t('Subscription Only')}
-                    {disablePref ? ` (${t('No Active')})` : ''}
-                  </SelectItem>
-                  <SelectItem value='wallet_only'>
-                    {t('Wallet Only')}
-                  </SelectItem>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectGroup>
+                    <SelectItem
+                      value='subscription_first'
+                      disabled={disablePref}
+                    >
+                      {getBillingPreferenceLabel('subscription_first', t)}
+                      {disablePref ? ` (${t('No Active')})` : ''}
+                    </SelectItem>
+                    <SelectItem value='wallet_first'>
+                      {getBillingPreferenceLabel('wallet_first', t)}
+                    </SelectItem>
+                    <SelectItem
+                      value='subscription_only'
+                      disabled={disablePref}
+                    >
+                      {getBillingPreferenceLabel('subscription_only', t)}
+                      {disablePref ? ` (${t('No Active')})` : ''}
+                    </SelectItem>
+                    <SelectItem value='wallet_only'>
+                      {getBillingPreferenceLabel('wallet_only', t)}
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <Button
@@ -426,7 +507,7 @@ export function SubscriptionPlansCard({
 
           {!hasAny && (
             <p className='text-muted-foreground mt-2 text-xs'>
-              {t('Purchase a plan to enjoy model benefits')}
+              {t('Subscribe to a plan for model access')}
             </p>
           )}
         </div>
@@ -461,10 +542,8 @@ export function SubscriptionPlansCard({
               return (
                 <Card
                   key={plan.id}
-                  className={cn(
-                    'transition-shadow hover:shadow-md',
-                    isPopular && 'border-primary/70 shadow-sm'
-                  )}
+                  data-card-hover='false'
+                  className={cn(isPopular && 'border-primary/70 shadow-sm')}
                 >
                   <CardContent className='flex h-full flex-col p-3.5 sm:p-4'>
                     <div className='mb-2 flex items-start justify-between gap-3'>
@@ -556,8 +635,11 @@ export function SubscriptionPlansCard({
         plan={selectedPlan}
         enableStripe={enableStripe}
         enableCreem={enableCreem}
+        enableWaffoPancake={enableWaffoPancake}
         enableOnlineTopUp={enableOnlineTopUp}
         epayMethods={epayMethods}
+        userQuota={userQuota}
+        onPurchaseSuccess={onPurchaseSuccess}
         purchaseLimit={
           selectedPlan?.plan?.max_purchase_per_user
             ? Number(selectedPlan.plan.max_purchase_per_user)

@@ -1,16 +1,43 @@
-import { useMemo } from 'react'
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
   ArrowLeft,
-  Boxes,
+  CalendarClock,
   Code2,
+  FileText,
   HeartPulse,
   Info,
-  ReceiptText,
-  Rocket,
+  Layers,
+  Maximize2,
+  Sparkles,
+  Timer,
 } from 'lucide-react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { getLobeIcon } from '@/lib/lobe-icon'
+
+import { CopyButton } from '@/components/copy-button'
+import { StaticDataTable } from '@/components/data-table'
+import { sideDrawerContentClassName } from '@/components/drawer-layout'
+import { GroupBadge } from '@/components/group-badge'
+import { PublicLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -20,18 +47,17 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { CopyButton } from '@/components/copy-button'
-import { GroupBadge } from '@/components/group-badge'
-import { PublicLayout } from '@/components/layout'
+import { getPerfMetrics } from '@/features/performance-metrics/api'
+import {
+  formatLatency,
+  formatThroughput,
+  formatUptimePct,
+  getSuccessRateTextClass,
+} from '@/features/performance-metrics/lib/format'
+import { getLobeIcon } from '@/lib/lobe-icon'
+import { cn } from '@/lib/utils'
+
 import { DEFAULT_TOKEN_UNIT, QUOTA_TYPE_VALUES } from '../constants'
 import { usePricingData } from '../hooks/use-pricing-data'
 import {
@@ -41,23 +67,17 @@ import {
   isDynamicPricingModel,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { buildUptimeSeries } from '../lib/mock-stats'
-import {
-  getAvailableGroups,
-  isTokenBasedModel,
-  replaceModelInPath,
-} from '../lib/model-helpers'
-import { inferModelMetadata } from '../lib/model-metadata'
+import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
-import type { PriceType, PricingModel, TokenUnit } from '../types'
+import type {
+  ModelCapability,
+  PriceType,
+  PricingModel,
+  TokenUnit,
+} from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
-import { ModelDetailsApi, ModelDetailsProviderInfo } from './model-details-api'
-import { ModelDetailsApps } from './model-details-apps'
-import { ModelDetailsCapabilities } from './model-details-capabilities'
-import { ModalitiesMatrix } from './model-details-modalities'
+import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
-import { ModelDetailsQuickStats } from './model-details-quick-stats'
-import { UptimeStatusRow } from './model-details-uptime-sparkline'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -71,18 +91,446 @@ function SectionTitle(props: { children: React.ReactNode }) {
   )
 }
 
+const CAPABILITY_LABEL_KEYS: Record<ModelCapability, string> = {
+  function_calling: 'Function calling',
+  streaming: 'Streaming',
+  vision: 'Vision',
+  json_mode: 'JSON mode',
+  structured_output: 'Structured output',
+  reasoning: 'Reasoning',
+  tools: 'Tools',
+  system_prompt: 'System prompt',
+  web_search: 'Web search',
+  code_interpreter: 'Code interpreter',
+  caching: 'Prompt caching',
+  embeddings: 'Embeddings',
+}
+
+const MODALITY_LABEL_KEYS: Record<string, string> = {
+  text: 'Text',
+  image: 'Image',
+  audio: 'Audio',
+  video: 'Video',
+  file: 'File',
+}
+
+const TOKEN_FORMAT = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 1,
+})
+
+function formatCatalogTokenCount(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return ''
+  if (tokens >= 1_000_000) {
+    return `${TOKEN_FORMAT.format(tokens / 1_000_000)}M`
+  }
+  if (tokens >= 1_000) {
+    return `${TOKEN_FORMAT.format(tokens / 1_000)}K`
+  }
+  return TOKEN_FORMAT.format(tokens)
+}
+
+function formatCatalogYearMonth(value?: string): string {
+  if (!value) return ''
+  const [yearStr, monthStr] = value.split('-')
+  const year = Number(yearStr)
+  const month = Number(monthStr)
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return value
+  const date = new Date(Date.UTC(year, month - 1, 1))
+  return date.toLocaleString(undefined, { year: 'numeric', month: 'short' })
+}
+
+function normalizeCatalogItems(items?: readonly string[]): string[] {
+  if (!items) return []
+  return items.filter((item) => item.trim().length > 0)
+}
+
+function OverviewMetric(props: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  value: React.ReactNode
+  valueClassName?: string
+}) {
+  const Icon = props.icon
+
+  return (
+    <div className='flex min-w-0 items-center gap-2 px-3 py-2'>
+      <Icon className='text-muted-foreground/70 size-3.5 shrink-0' />
+      <div className='min-w-0 flex-1'>
+        <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
+          {props.label}
+        </div>
+        <div
+          className={cn(
+            'text-foreground truncate font-mono text-sm font-semibold tabular-nums',
+            props.valueClassName
+          )}
+        >
+          {props.value}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OverviewSummaryGrid(props: { model: PricingModel }) {
+  const { t } = useTranslation()
+  const metricsQuery = useQuery({
+    queryKey: ['perf-metrics', props.model.model_name],
+    queryFn: () => getPerfMetrics(props.model.model_name, 24),
+    staleTime: 60 * 1000,
+  })
+
+  const groups = metricsQuery.data?.data.groups ?? []
+  const successRates = groups
+    .map((group) => group.success_rate)
+    .filter((rate) => Number.isFinite(rate))
+  const successRate =
+    successRates.length > 0
+      ? successRates.reduce((sum, rate) => sum + rate, 0) / successRates.length
+      : Number.NaN
+  const tpsValues = groups
+    .map((group) => group.avg_tps)
+    .filter((value) => value > 0)
+  const avgTps =
+    tpsValues.length > 0
+      ? tpsValues.reduce((sum, value) => sum + value, 0) / tpsValues.length
+      : 0
+  const latencyValues = groups
+    .map((group) => group.avg_latency_ms)
+    .filter((value) => value > 0)
+  const avgLatency =
+    latencyValues.length > 0
+      ? Math.round(
+          latencyValues.reduce((sum, value) => sum + value, 0) /
+            latencyValues.length
+        )
+      : 0
+
+  return (
+    <div className='bg-muted/20 grid overflow-hidden rounded-lg border sm:grid-cols-3 sm:divide-x'>
+      <OverviewMetric
+        icon={Timer}
+        label='TPS'
+        value={formatThroughput(avgTps)}
+      />
+      <OverviewMetric
+        icon={Timer}
+        label={t('Average latency')}
+        value={formatLatency(avgLatency)}
+      />
+      <OverviewMetric
+        icon={HeartPulse}
+        label={t('Success rate')}
+        value={formatUptimePct(successRate)}
+        valueClassName={getSuccessRateTextClass(successRate)}
+      />
+    </div>
+  )
+}
+
+function CatalogPillList(props: { items: string[] }) {
+  return (
+    <div className='flex min-w-0 flex-wrap gap-1.5'>
+      {props.items.map((item) => (
+        <span
+          key={item}
+          className='bg-muted text-muted-foreground rounded-md px-2 py-1 text-xs font-medium'
+        >
+          {item}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function CatalogTextValue(props: { children: React.ReactNode }) {
+  return (
+    <span className='text-foreground min-w-0 truncate text-sm font-semibold'>
+      {props.children}
+    </span>
+  )
+}
+
+function CatalogInfoCell(props: { label: string; children: React.ReactNode }) {
+  return (
+    <div className='bg-card flex min-w-0 flex-col gap-1 px-3 py-2.5'>
+      <span className='text-muted-foreground text-[10px] font-medium tracking-wider uppercase'>
+        {props.label}
+      </span>
+      {props.children}
+    </div>
+  )
+}
+
+function ModalityLabels(props: { items: string[] }) {
+  const { t } = useTranslation()
+  if (props.items.length === 0) return null
+
+  return (
+    <span className='inline-flex items-center gap-1 align-middle'>
+      {props.items.map((item) => (
+        <span key={item} className='font-medium'>
+          {t(MODALITY_LABEL_KEYS[item] ?? item)}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function ModelBackendQuickStats(props: { model: PricingModel }) {
+  const { t } = useTranslation()
+  const model = props.model
+  const inputModalities = normalizeCatalogItems(model.input_modalities)
+  const outputModalities = normalizeCatalogItems(model.output_modalities)
+  const contextLength = model.context_length ?? 0
+  const maxOutput = model.max_output_tokens ?? 0
+  const knowledgeCutoff = formatCatalogYearMonth(model.knowledge_cutoff)
+  const releaseDate = formatCatalogYearMonth(model.release_date)
+
+  const stats: {
+    key: string
+    icon: React.ComponentType<{ className?: string }>
+    label: string
+    value: React.ReactNode
+    hint?: string
+  }[] = []
+
+  if (contextLength > 0) {
+    stats.push({
+      key: 'context',
+      icon: Layers,
+      label: t('Context'),
+      value: formatCatalogTokenCount(contextLength),
+      hint: t('Maximum input window'),
+    })
+  }
+
+  if (maxOutput > 0) {
+    stats.push({
+      key: 'max-output',
+      icon: Maximize2,
+      label: t('Max output'),
+      value: formatCatalogTokenCount(maxOutput),
+      hint: t('Maximum tokens per response'),
+    })
+  }
+
+  if (inputModalities.length > 0 || outputModalities.length > 0) {
+    stats.push({
+      key: 'modalities',
+      icon: FileText,
+      label: t('Modalities'),
+      value: (
+        <span className='inline-flex items-center gap-1'>
+          <ModalityLabels items={inputModalities} />
+          {inputModalities.length > 0 && outputModalities.length > 0 && (
+            <span className='text-muted-foreground/40'>→</span>
+          )}
+          <ModalityLabels items={outputModalities} />
+        </span>
+      ),
+    })
+  }
+
+  if (knowledgeCutoff) {
+    stats.push({
+      key: 'knowledge',
+      icon: Sparkles,
+      label: t('Knowledge cutoff'),
+      value: knowledgeCutoff,
+    })
+  }
+
+  if (releaseDate) {
+    stats.push({
+      key: 'release',
+      icon: CalendarClock,
+      label: t('Released'),
+      value: releaseDate,
+    })
+  }
+
+  if (stats.length === 0) return null
+
+  return (
+    <div className='bg-muted/20 grid grid-cols-2 gap-px overflow-hidden rounded-lg border @md/details:grid-cols-3 @2xl/details:grid-cols-5'>
+      {stats.map((stat) => {
+        const Icon = stat.icon
+        return (
+          <div
+            key={stat.key}
+            className='bg-background flex min-w-0 flex-col gap-0.5 px-3 py-2.5'
+          >
+            <span className='text-muted-foreground inline-flex min-w-0 items-center gap-1 text-[10px] font-medium tracking-wider uppercase'>
+              <Icon className='size-3 shrink-0' />
+              <span className='truncate'>{stat.label}</span>
+            </span>
+            <span className='text-foreground truncate text-sm font-semibold tabular-nums'>
+              {stat.value}
+            </span>
+            {stat.hint && (
+              <span className='text-muted-foreground/60 truncate text-[10px]'>
+                {stat.hint}
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ModelBackendSignalsSection(props: { model: PricingModel }) {
+  const { t } = useTranslation()
+  const capabilities = normalizeCatalogItems(props.model.capabilities)
+  const inputModalities = normalizeCatalogItems(props.model.input_modalities)
+  const outputModalities = normalizeCatalogItems(props.model.output_modalities)
+
+  if (
+    capabilities.length === 0 &&
+    inputModalities.length === 0 &&
+    outputModalities.length === 0
+  ) {
+    return null
+  }
+
+  return (
+    <section>
+      <SectionTitle>
+        {t('Capabilities')} / {t('Supported modalities')}
+      </SectionTitle>
+      <div className='grid gap-3 rounded-xl border p-3 @2xl/details:grid-cols-[minmax(0,1.5fr)_minmax(260px,1fr)]'>
+        {capabilities.length > 0 ? (
+          <CatalogPillList
+            items={capabilities.map((capability) =>
+              t(
+                CAPABILITY_LABEL_KEYS[capability as ModelCapability] ??
+                  capability
+              )
+            )}
+          />
+        ) : (
+          <div />
+        )}
+        {(inputModalities.length > 0 || outputModalities.length > 0) && (
+          <div className='grid gap-2 sm:grid-cols-2'>
+            {inputModalities.length > 0 && (
+              <div className='flex items-center justify-between gap-3 rounded-lg border px-3 py-2'>
+                <span className='text-muted-foreground text-xs font-medium'>
+                  {t('Input')}
+                </span>
+                <CatalogTextValue>
+                  <ModalityLabels items={inputModalities} />
+                </CatalogTextValue>
+              </div>
+            )}
+            {outputModalities.length > 0 && (
+              <div className='flex items-center justify-between gap-3 rounded-lg border px-3 py-2'>
+                <span className='text-muted-foreground text-xs font-medium'>
+                  {t('Output')}
+                </span>
+                <CatalogTextValue>
+                  <ModalityLabels items={outputModalities} />
+                </CatalogTextValue>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function ModelBackendProviderSection(props: { model: PricingModel }) {
+  const { t } = useTranslation()
+  const model = props.model
+  const groups = normalizeCatalogItems(model.enable_groups)
+  const endpoints = normalizeCatalogItems(model.supported_endpoint_types)
+  const tags = parseTags(model.tags)
+  const cells: React.ReactNode[] = []
+
+  if (model.vendor_name) {
+    cells.push(
+      <CatalogInfoCell key='provider' label={t('Provider')}>
+        <CatalogTextValue>{model.vendor_name}</CatalogTextValue>
+      </CatalogInfoCell>
+    )
+  }
+
+  cells.push(
+    <CatalogInfoCell key='type' label={t('Type')}>
+      <CatalogTextValue>
+        {model.quota_type === QUOTA_TYPE_VALUES.TOKEN
+          ? t('Token-based')
+          : t('Per Request')}
+      </CatalogTextValue>
+    </CatalogInfoCell>
+  )
+
+  if (groups.length > 0) {
+    cells.push(
+      <CatalogInfoCell key='groups' label={t('Groups')}>
+        <CatalogPillList items={groups} />
+      </CatalogInfoCell>
+    )
+  }
+
+  if (endpoints.length > 0) {
+    cells.push(
+      <CatalogInfoCell key='endpoints' label={t('Endpoints')}>
+        <CatalogPillList items={endpoints} />
+      </CatalogInfoCell>
+    )
+  }
+
+  if (tags.length > 0) {
+    cells.push(
+      <CatalogInfoCell key='tags' label={t('Tags')}>
+        <CatalogPillList items={tags} />
+      </CatalogInfoCell>
+    )
+  }
+
+  if (model.parameter_count) {
+    cells.push(
+      <CatalogInfoCell key='parameters' label={t('Parameters')}>
+        <CatalogTextValue>{model.parameter_count}</CatalogTextValue>
+      </CatalogInfoCell>
+    )
+  }
+
+  if (cells.length === 0) return null
+
+  return (
+    <section>
+      <SectionTitle>{t('Model')}</SectionTitle>
+      <div className='border-border/60 bg-border/60 grid grid-cols-1 gap-px overflow-hidden rounded-lg border sm:grid-cols-2'>
+        {cells}
+      </div>
+    </section>
+  )
+}
+
+function ModelBackendDetailsSection(props: { model: PricingModel }) {
+  return (
+    <>
+      <ModelBackendQuickStats model={props.model} />
+      <ModelBackendSignalsSection model={props.model} />
+      <ModelBackendProviderSection model={props.model} />
+    </>
+  )
+}
+
 // ----------------------------------------------------------------------------
-// Model header (always visible above the tabs)
+// Model header (always visible above the detail sections)
 // ----------------------------------------------------------------------------
 
 function ModelHeader(props: { model: PricingModel }) {
   const { t } = useTranslation()
   const model = props.model
-  const vendorIcon = model.vendor_icon
-    ? getLobeIcon(model.vendor_icon, 20)
-    : null
+  const modelIconKey = model.icon || model.vendor_icon
+  const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 20) : null
   const description = model.description || model.vendor_description || null
-  const tags = parseTags(model.tags)
   const isSpecialExpression =
     model.billing_mode === 'tiered_expr' &&
     Boolean(model.billing_expr) &&
@@ -91,7 +539,7 @@ function ModelHeader(props: { model: PricingModel }) {
   return (
     <header className='pb-4'>
       <div className='flex items-center gap-2.5'>
-        {vendorIcon}
+        {modelIcon}
         <h1 className='font-mono text-xl font-bold tracking-tight sm:text-2xl'>
           {model.model_name}
         </h1>
@@ -129,18 +577,6 @@ function ModelHeader(props: { model: PricingModel }) {
         <p className='text-muted-foreground mt-2 text-sm leading-relaxed'>
           {description}
         </p>
-      )}
-      {tags.length > 0 && (
-        <div className='mt-2.5 flex flex-wrap gap-1'>
-          {tags.map((tag) => (
-            <span
-              key={tag}
-              className='bg-muted text-muted-foreground rounded px-2 py-0.5 text-[11px] font-medium'
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
       )}
     </header>
   )
@@ -365,55 +801,6 @@ function PriceSection(props: {
 }
 
 // ----------------------------------------------------------------------------
-// API endpoints list
-// ----------------------------------------------------------------------------
-
-function EndpointsSection(props: {
-  model: PricingModel
-  endpointMap: Record<string, { path?: string; method?: string }>
-}) {
-  const { t } = useTranslation()
-  const endpoints = useMemo(() => {
-    const types = props.model.supported_endpoint_types || []
-    return types.map((type) => {
-      const info = props.endpointMap[type] || {}
-      let path = info.path || ''
-      if (path.includes('{model}')) {
-        path = replaceModelInPath(path, props.model.model_name || '')
-      }
-      return { type, path, method: info.method || 'POST' }
-    })
-  }, [props.model, props.endpointMap])
-
-  if (endpoints.length === 0) return null
-
-  return (
-    <section>
-      <SectionTitle>{t('API Endpoints')}</SectionTitle>
-      <div className='space-y-1'>
-        {endpoints.map(({ type, path, method }) => (
-          <div key={type} className='flex items-center justify-between py-1'>
-            <div className='flex items-center gap-2'>
-              <span className='text-sm font-medium'>{type}</span>
-              {path && (
-                <code className='text-muted-foreground/60 text-xs break-all'>
-                  {path}
-                </code>
-              )}
-            </div>
-            {path && (
-              <span className='bg-muted text-muted-foreground rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase'>
-                {method}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  )
-}
-
-// ----------------------------------------------------------------------------
 // Auto group chain (used inside group pricing section)
 // ----------------------------------------------------------------------------
 
@@ -441,6 +828,40 @@ function AutoGroupChain(props: { model: PricingModel; autoGroups: string[] }) {
         </span>
       ))}
     </div>
+  )
+}
+
+type DynamicPriceOptions = Parameters<typeof getDynamicPriceEntries>[1]
+type DynamicPricingTier = ReturnType<typeof getDynamicPricingTiers>[number]
+type DynamicFormattedPricesByTier = Map<DynamicPricingTier, Map<string, string>>
+
+function getDynamicPriceFields(
+  tiers: DynamicPricingTier[],
+  options: DynamicPriceOptions
+) {
+  return Array.from(
+    new Map(
+      tiers
+        .flatMap((tier) => getDynamicPriceEntries(tier, options))
+        .map((entry) => [entry.field, entry])
+    ).values()
+  )
+}
+
+function getDynamicFormattedPricesByTier(
+  tiers: DynamicPricingTier[],
+  options: DynamicPriceOptions
+): DynamicFormattedPricesByTier {
+  return new Map(
+    tiers.map((tier) => [
+      tier,
+      new Map(
+        getDynamicPriceEntries(tier, options).map((entry) => [
+          entry.field,
+          entry.formatted,
+        ])
+      ),
+    ])
   )
 }
 
@@ -534,20 +955,27 @@ function GroupPricingSection(props: {
       )
     }
 
-    const priceFields = Array.from(
-      new Map(
-        dynamicTiers
-          .flatMap((tier) =>
-            getDynamicPriceEntries(tier, {
-              tokenUnit: props.tokenUnit,
-              showRechargePrice,
-              priceRate: props.priceRate,
-              usdExchangeRate: props.usdExchangeRate,
-              groupRatioMultiplier: 1,
-            })
-          )
-          .map((entry) => [entry.field, entry])
-      ).values()
+    const priceFields = getDynamicPriceFields(dynamicTiers, {
+      tokenUnit: props.tokenUnit,
+      showRechargePrice,
+      priceRate: props.priceRate,
+      usdExchangeRate: props.usdExchangeRate,
+      groupRatioMultiplier: 1,
+    })
+    const formattedPricesByGroup = new Map(
+      availableGroups.map((group) => {
+        const ratio = props.groupRatio[group] || 1
+        return [
+          group,
+          getDynamicFormattedPricesByTier(dynamicTiers, {
+            tokenUnit: props.tokenUnit,
+            showRechargePrice,
+            priceRate: props.priceRate,
+            usdExchangeRate: props.usdExchangeRate,
+            groupRatioMultiplier: ratio,
+          }),
+        ] as const
+      })
     )
 
     return (
@@ -557,6 +985,10 @@ function GroupPricingSection(props: {
         <div className='space-y-3'>
           {availableGroups.map((group) => {
             const ratio = props.groupRatio[group] || 1
+            const formattedPricesByTier =
+              formattedPricesByGroup.get(group) ??
+              new Map<DynamicPricingTier, Map<string, string>>()
+
             return (
               <div key={group} className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/20 flex items-center justify-between gap-3 border-b px-3 py-2'>
@@ -565,56 +997,34 @@ function GroupPricingSection(props: {
                     {ratio}x
                   </span>
                 </div>
-                <div className='overflow-x-auto'>
-                  <Table className='text-sm'>
-                    <TableHeader>
-                      <TableRow className='hover:bg-transparent'>
-                        <TableHead className={thClass}>{t('Tier')}</TableHead>
-                        {priceFields.map((entry) => (
-                          <TableHead
-                            key={entry.field}
-                            className={`${thClass} text-right`}
-                          >
-                            {t(entry.shortLabel)}
-                          </TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dynamicTiers.map((tier, tierIndex) => {
-                        const entries = getDynamicPriceEntries(tier, {
-                          tokenUnit: props.tokenUnit,
-                          showRechargePrice,
-                          priceRate: props.priceRate,
-                          usdExchangeRate: props.usdExchangeRate,
-                          groupRatioMultiplier: ratio,
-                        })
-                        const entryMap = new Map(
-                          entries.map((entry) => [entry.field, entry])
-                        )
-
-                        return (
-                          <TableRow key={`${group}-${tier.label || tierIndex}`}>
-                            <TableCell className='text-muted-foreground py-2.5 text-xs'>
-                              {tier.label || t('Default')}
-                            </TableCell>
-                            {priceFields.map((fieldEntry) => {
-                              const entry = entryMap.get(fieldEntry.field)
-                              return (
-                                <TableCell
-                                  key={fieldEntry.field}
-                                  className='py-2.5 text-right font-mono'
-                                >
-                                  {entry?.formatted ?? '-'}
-                                </TableCell>
-                              )
-                            })}
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
+                <StaticDataTable
+                  className='rounded-none border-0'
+                  tableClassName='text-sm'
+                  headerRowClassName='hover:bg-transparent'
+                  data={dynamicTiers}
+                  getRowKey={(tier, tierIndex) =>
+                    `${group}-${tier.label || tierIndex}`
+                  }
+                  columns={[
+                    {
+                      id: 'tier',
+                      header: t('Tier'),
+                      className: thClass,
+                      cellClassName: 'text-muted-foreground py-2.5',
+                      cell: (tier) => tier.label || t('Default'),
+                    },
+                    ...priceFields.map((fieldEntry) => ({
+                      id: fieldEntry.field,
+                      header: t(fieldEntry.shortLabel),
+                      className: `${thClass} text-right`,
+                      cellClassName: 'py-2.5 text-right font-mono',
+                      cell: (tier: (typeof dynamicTiers)[number]) =>
+                        formattedPricesByTier
+                          .get(tier)
+                          ?.get(fieldEntry.field) ?? '-',
+                    })),
+                  ]}
+                />
               </div>
             )
           })}
@@ -626,112 +1036,88 @@ function GroupPricingSection(props: {
     )
   }
 
+  const renderGroupPrice = (group: string, type: PriceType) =>
+    formatGroupPrice(
+      props.model,
+      group,
+      type,
+      props.tokenUnit,
+      showRechargePrice,
+      props.priceRate,
+      props.usdExchangeRate,
+      props.groupRatio
+    )
+  const renderFixedGroupPrice = (group: string) =>
+    formatFixedPrice(
+      props.model,
+      group,
+      showRechargePrice,
+      props.priceRate,
+      props.usdExchangeRate,
+      props.groupRatio
+    )
+
   return (
     <section>
       <SectionTitle>{t('Pricing by Group')}</SectionTitle>
       <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
-      <div className='-mx-4 overflow-x-auto sm:mx-0'>
-        <Table className='text-sm'>
-          <TableHeader>
-            <TableRow className='hover:bg-transparent'>
-              <TableHead className={thClass}>{t('Group')}</TableHead>
-              <TableHead className={thClass}>{t('Ratio')}</TableHead>
-              {isTokenBased ? (
-                <>
-                  <TableHead className={`${thClass} text-right`}>
-                    {t('Input')}
-                  </TableHead>
-                  <TableHead className={`${thClass} text-right`}>
-                    {t('Output')}
-                  </TableHead>
-                  {extraPriceTypes.map((ep) => (
-                    <TableHead
-                      key={ep.type}
-                      className={`${thClass} text-right`}
-                    >
-                      {ep.label}
-                    </TableHead>
-                  ))}
-                </>
-              ) : (
-                <TableHead className={`${thClass} text-right`}>
-                  {t('Price')}
-                </TableHead>
-              )}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {availableGroups.map((group) => {
-              const ratio = props.groupRatio[group] || 1
-              return (
-                <TableRow key={group}>
-                  <TableCell className='py-2.5'>
-                    <GroupBadge group={group} size='sm' />
-                  </TableCell>
-                  <TableCell className='text-muted-foreground py-2.5 font-mono text-xs'>
-                    {ratio}x
-                  </TableCell>
-                  {isTokenBased ? (
-                    <>
-                      <TableCell className='py-2.5 text-right font-mono'>
-                        {formatGroupPrice(
-                          props.model,
-                          group,
-                          'input',
-                          props.tokenUnit,
-                          showRechargePrice,
-                          props.priceRate,
-                          props.usdExchangeRate,
-                          props.groupRatio
-                        )}
-                      </TableCell>
-                      <TableCell className='py-2.5 text-right font-mono'>
-                        {formatGroupPrice(
-                          props.model,
-                          group,
-                          'output',
-                          props.tokenUnit,
-                          showRechargePrice,
-                          props.priceRate,
-                          props.usdExchangeRate,
-                          props.groupRatio
-                        )}
-                      </TableCell>
-                      {extraPriceTypes.map((ep) => (
-                        <TableCell
-                          key={ep.type}
-                          className='py-2.5 text-right font-mono'
-                        >
-                          {formatGroupPrice(
-                            props.model,
-                            group,
-                            ep.type,
-                            props.tokenUnit,
-                            showRechargePrice,
-                            props.priceRate,
-                            props.usdExchangeRate,
-                            props.groupRatio
-                          )}
-                        </TableCell>
-                      ))}
-                    </>
-                  ) : (
-                    <TableCell className='py-2.5 text-right font-mono'>
-                      {formatFixedPrice(
-                        props.model,
-                        group,
-                        showRechargePrice,
-                        props.priceRate,
-                        props.usdExchangeRate,
-                        props.groupRatio
-                      )}
-                    </TableCell>
-                  )}
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
+      <StaticDataTable
+        className='-mx-4 rounded-none border-0 sm:mx-0'
+        tableClassName='text-sm'
+        headerRowClassName='hover:bg-transparent'
+        data={availableGroups}
+        getRowKey={(group) => group}
+        columns={[
+          {
+            id: 'group',
+            header: t('Group'),
+            className: thClass,
+            cellClassName: 'py-2.5',
+            cell: (group) => <GroupBadge group={group} size='sm' />,
+          },
+          {
+            id: 'ratio',
+            header: t('Ratio'),
+            className: thClass,
+            cellClassName: 'text-muted-foreground py-2.5 font-mono',
+            cell: (group) => `${props.groupRatio[group] || 1}x`,
+          },
+          ...(isTokenBased
+            ? [
+                {
+                  id: 'input',
+                  header: t('Input'),
+                  className: `${thClass} text-right`,
+                  cellClassName: 'py-2.5 text-right font-mono',
+                  cell: (group: string) => renderGroupPrice(group, 'input'),
+                },
+                {
+                  id: 'output',
+                  header: t('Output'),
+                  className: `${thClass} text-right`,
+                  cellClassName: 'py-2.5 text-right font-mono',
+                  cell: (group: string) => renderGroupPrice(group, 'output'),
+                },
+                ...extraPriceTypes.map((ep) => ({
+                  id: ep.type,
+                  header: ep.label,
+                  className: `${thClass} text-right`,
+                  cellClassName: 'py-2.5 text-right font-mono',
+                  cell: (group: string) => renderGroupPrice(group, ep.type),
+                })),
+              ]
+            : [
+                {
+                  id: 'price',
+                  header: t('Price'),
+                  className: `${thClass} text-right`,
+                  cellClassName: 'py-2.5 text-right font-mono',
+                  cell: renderFixedGroupPrice,
+                },
+              ]),
+        ]}
+      />
+      <div className='-mx-4 sm:mx-0'>
         {isTokenBased && (
           <p className='text-muted-foreground/40 mt-1.5 px-4 text-[10px] sm:px-0'>
             {t('Prices shown per')} {tokenUnitLabel} tokens
@@ -742,17 +1128,7 @@ function GroupPricingSection(props: {
   )
 }
 
-// ----------------------------------------------------------------------------
-// Tabbed details content
-// ----------------------------------------------------------------------------
-
-const TAB_VALUES = [
-  'overview',
-  'pricing',
-  'performance',
-  'api',
-  'apps',
-] as const
+const TAB_VALUES = ['overview', 'performance', 'api'] as const
 type TabValue = (typeof TAB_VALUES)[number]
 
 const TAB_META: Record<
@@ -760,10 +1136,8 @@ const TAB_META: Record<
   { icon: React.ComponentType<{ className?: string }>; labelKey: string }
 > = {
   overview: { icon: Info, labelKey: 'Overview' },
-  pricing: { icon: ReceiptText, labelKey: 'Pricing' },
   performance: { icon: HeartPulse, labelKey: 'Performance' },
   api: { icon: Code2, labelKey: 'API' },
-  apps: { icon: Rocket, labelKey: 'Apps' },
 }
 
 export interface ModelDetailsContentProps {
@@ -781,11 +1155,6 @@ export interface ModelDetailsContentProps {
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const { t } = useTranslation()
   const showRechargePrice = props.showRechargePrice ?? false
-  const metadata = useMemo(() => inferModelMetadata(props.model), [props.model])
-  const uptimeSeries = useMemo(
-    () => buildUptimeSeries(props.model),
-    [props.model]
-  )
 
   const isDynamic =
     props.model.billing_mode === 'tiered_expr' &&
@@ -795,80 +1164,51 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
     <div className='@container/details space-y-4'>
       <ModelHeader model={props.model} />
 
-      <ModelDetailsQuickStats metadata={metadata} />
-
-      <UptimeStatusRow series={uptimeSeries} />
-
       <Tabs defaultValue='overview' className='gap-4'>
-        <TabsList className='bg-muted/60 h-auto w-full justify-start gap-1 overflow-x-auto rounded-lg p-1'>
+        <TabsList className='bg-muted/60 grid w-full grid-cols-3 gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto'>
           {TAB_VALUES.map((value) => {
             const Icon = TAB_META[value].icon
             return (
               <TabsTrigger
                 key={value}
                 value={value}
-                className='h-8 gap-1.5 rounded-md px-3 text-xs sm:text-sm'
+                className='h-8 min-w-0 gap-1.5 rounded-md px-3 text-xs sm:text-sm'
               >
                 <Icon className='size-3.5' />
-                <span>{t(TAB_META[value].labelKey)}</span>
+                <span className='truncate'>{t(TAB_META[value].labelKey)}</span>
               </TabsTrigger>
             )
           })}
         </TabsList>
 
-        <TabsContent value='overview' className='space-y-5 outline-none'>
-          <section>
-            <div className='mb-3 flex items-center gap-2'>
-              <Boxes className='text-muted-foreground/70 size-3.5' />
-              <h3 className='text-foreground text-sm font-semibold'>
-                {t('Capabilities')}
-              </h3>
-            </div>
-            <ModelDetailsCapabilities capabilities={metadata.capabilities} />
-          </section>
+        <TabsContent value='overview' className='space-y-6 outline-none'>
+          <OverviewSummaryGrid model={props.model} />
 
-          <section>
-            <div className='mb-3 flex items-center gap-2'>
-              <h3 className='text-foreground text-sm font-semibold'>
-                {t('Supported modalities')}
-              </h3>
-            </div>
-            <ModalitiesMatrix
-              input={metadata.input_modalities}
-              output={metadata.output_modalities}
+          <section className='bg-card/60 space-y-5 rounded-xl border p-4 shadow-sm'>
+            <SectionTitle>{t('Pricing')}</SectionTitle>
+            <PriceSection
+              model={props.model}
+              priceRate={props.priceRate}
+              usdExchangeRate={props.usdExchangeRate}
+              tokenUnit={props.tokenUnit}
+              showRechargePrice={showRechargePrice}
+            />
+            {isDynamic && (
+              <DynamicPricingBreakdown billingExpr={props.model.billing_expr} />
+            )}
+            <GroupPricingSection
+              model={props.model}
+              groupRatio={props.groupRatio}
+              usableGroup={props.usableGroup}
+              autoGroups={props.autoGroups}
+              priceRate={props.priceRate}
+              usdExchangeRate={props.usdExchangeRate}
+              tokenUnit={props.tokenUnit}
+              showRechargePrice={showRechargePrice}
             />
           </section>
 
-          <ModelDetailsProviderInfo model={props.model} />
-
-          <PriceSection
-            model={props.model}
-            priceRate={props.priceRate}
-            usdExchangeRate={props.usdExchangeRate}
-            tokenUnit={props.tokenUnit}
-            showRechargePrice={showRechargePrice}
-          />
-
-          <EndpointsSection
-            model={props.model}
-            endpointMap={props.endpointMap}
-          />
-        </TabsContent>
-
-        <TabsContent value='pricing' className='space-y-5 outline-none'>
-          {isDynamic && (
-            <DynamicPricingBreakdown billingExpr={props.model.billing_expr} />
-          )}
-          <GroupPricingSection
-            model={props.model}
-            groupRatio={props.groupRatio}
-            usableGroup={props.usableGroup}
-            autoGroups={props.autoGroups}
-            priceRate={props.priceRate}
-            usdExchangeRate={props.usdExchangeRate}
-            tokenUnit={props.tokenUnit}
-            showRechargePrice={showRechargePrice}
-          />
+          <ModelBackendDetailsSection model={props.model} />
         </TabsContent>
 
         <TabsContent value='performance' className='outline-none'>
@@ -880,10 +1220,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
             model={props.model}
             endpointMap={props.endpointMap}
           />
-        </TabsContent>
-
-        <TabsContent value='apps' className='outline-none'>
-          <ModelDetailsApps model={props.model} />
         </TabsContent>
       </Tabs>
     </div>
@@ -907,7 +1243,9 @@ export function ModelDetailsDrawer(props: ModelDetailsDrawerProps) {
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side='right'
-        className='flex h-dvh w-full overflow-hidden p-0 sm:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-5xl'
+        className={sideDrawerContentClassName(
+          'sm:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-5xl'
+        )}
       >
         <SheetHeader className='sr-only'>
           <SheetTitle>{props.model.model_name}</SheetTitle>

@@ -1,55 +1,54 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle, HeartPulse, Timer } from 'lucide-react'
 import { useMemo } from 'react'
-import {
-  Activity,
-  AlertTriangle,
-  Gauge,
-  HeartPulse,
-  Timer,
-  TrendingUp,
-} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { cn } from '@/lib/utils'
+
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+  StaticDataTable,
+  staticDataTableClassNames as tableStyles,
+} from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
+import { getPerfMetrics } from '@/features/performance-metrics/api'
 import {
-  aggregateUptime,
-  buildGroupPerformance,
-  buildLatencyTimeSeries,
-  buildUptimeSeries,
   formatLatency,
   formatThroughput,
   formatUptimePct,
-  type UptimeDayPoint,
-} from '../lib/mock-stats'
-import type { PricingModel } from '../types'
-import {
-  LatencyTrendChart,
-  ThroughputBarChart,
-  UptimeBarChart,
-} from './model-details-charts'
-import { UptimeSparkline } from './model-details-uptime-sparkline'
+  getSuccessRateTextClass,
+} from '@/features/performance-metrics/lib/format'
+import type { PerformanceGroup } from '@/features/performance-metrics/types'
+import { cn } from '@/lib/utils'
 
-const COMPACT_NUMBER = new Intl.NumberFormat(undefined, {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
+import { type UptimeDayPoint } from '../lib/mock-stats'
+import type { PricingModel } from '../types'
+import { LatencyTrendChart, UptimeTrendChart } from './model-details-charts'
+import { UptimeSparkline } from './model-details-uptime-sparkline'
 
 function StatCard(props: {
   icon: React.ComponentType<{ className?: string }>
   label: string
   value: React.ReactNode
   hint?: string
-  intent?: 'default' | 'warning' | 'success'
+  valueClassName?: string
 }) {
   const Icon = props.icon
-  const intent = props.intent ?? 'default'
   return (
     <div className='bg-background flex flex-col gap-1 rounded-lg border p-3'>
       <span className='text-muted-foreground inline-flex items-center gap-1.5 text-[10px] font-medium tracking-wider uppercase'>
@@ -59,8 +58,7 @@ function StatCard(props: {
       <span
         className={cn(
           'text-foreground font-mono text-lg font-semibold tabular-nums',
-          intent === 'warning' && 'text-amber-600 dark:text-amber-400',
-          intent === 'success' && 'text-emerald-600 dark:text-emerald-400'
+          props.valueClassName
         )}
       >
         {props.value}
@@ -74,33 +72,128 @@ function StatCard(props: {
   )
 }
 
+type PerformanceRow = {
+  group: string
+  avg_ttft_ms: number
+  avg_latency_ms: number
+  success_rate: number
+  avg_tps: number
+}
+
+function toUptimePct(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  const clamped = Math.min(100, Math.max(0, value))
+  return Math.round(clamped * 100) / 100
+}
+
+function toLatencySeries(groups: PerformanceGroup[]) {
+  const byTs = new Map<number, number[]>()
+  for (const group of groups) {
+    for (const point of group.series) {
+      if (point.avg_ttft_ms <= 0) continue
+      const current = byTs.get(point.ts) ?? []
+      current.push(point.avg_ttft_ms)
+      byTs.set(point.ts, current)
+    }
+  }
+
+  return Array.from(byTs.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([ts, values]) => ({
+      timestamp: new Date(ts * 1000).toISOString(),
+      group: 'latency',
+      ttft_ms: Math.round(
+        values.reduce((sum, value) => sum + value, 0) / values.length
+      ),
+    }))
+}
+
+function toUptimeSeries(groups: PerformanceGroup[]): UptimeDayPoint[] {
+  const byTs = new Map<number, { rates: number[]; incidents: number }>()
+  for (const group of groups) {
+    for (const point of group.series) {
+      const current = byTs.get(point.ts) ?? { rates: [], incidents: 0 }
+      if (Number.isFinite(point.success_rate)) {
+        const successRate = toUptimePct(point.success_rate)
+        current.rates.push(successRate)
+        if (successRate < 100) current.incidents += 1
+      }
+      byTs.set(point.ts, current)
+    }
+  }
+  return Array.from(byTs.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([ts, value]) => {
+      const uptime =
+        value.rates.length > 0
+          ? value.rates.reduce((sum, rate) => sum + rate, 0) /
+            value.rates.length
+          : 0
+      return {
+        date: new Date(ts * 1000).toISOString(),
+        uptime_pct: toUptimePct(uptime),
+        incidents: value.incidents,
+        outage_minutes: 0,
+      }
+    })
+}
+
+function toGroupUptimeSeries(group: PerformanceGroup): UptimeDayPoint[] {
+  return group.series.map((point) => {
+    const successRate = toUptimePct(point.success_rate)
+    return {
+      date: new Date(point.ts * 1000).toISOString(),
+      uptime_pct: successRate,
+      incidents: successRate < 100 ? 1 : 0,
+      outage_minutes: 0,
+    }
+  })
+}
+
+function average(
+  rows: PerformanceRow[],
+  field: 'avg_ttft_ms' | 'avg_latency_ms'
+) {
+  const values = rows.map((row) => row[field]).filter((value) => value > 0)
+  if (values.length === 0) return 0
+  return Math.round(
+    values.reduce((sum, value) => sum + value, 0) / values.length
+  )
+}
+
 export function ModelDetailsPerformance(props: { model: PricingModel }) {
   const { t } = useTranslation()
-  const performances = useMemo(
-    () => buildGroupPerformance(props.model),
-    [props.model]
+  const metricsQuery = useQuery({
+    queryKey: ['perf-metrics', props.model.model_name],
+    queryFn: () => getPerfMetrics(props.model.model_name, 24),
+    staleTime: 60 * 1000,
+  })
+  const groups = useMemo(
+    () => metricsQuery.data?.data.groups ?? [],
+    [metricsQuery.data]
   )
-  const latencySeries = useMemo(
-    () => buildLatencyTimeSeries(props.model),
-    [props.model]
+  const performances = useMemo<PerformanceRow[]>(
+    () =>
+      groups.map((group) => ({
+        group: group.group,
+        avg_ttft_ms: group.avg_ttft_ms,
+        avg_latency_ms: group.avg_latency_ms,
+        success_rate: group.success_rate,
+        avg_tps: group.avg_tps,
+      })),
+    [groups]
   )
-  const uptimeSeries = useMemo(
-    () => buildUptimeSeries(props.model),
-    [props.model]
-  )
-  const aggregated = useMemo(
-    () => aggregateUptime(uptimeSeries),
-    [uptimeSeries]
-  )
+  const latencySeries = useMemo(() => toLatencySeries(groups), [groups])
+  const uptimeSeries = useMemo(() => toUptimeSeries(groups), [groups])
   const uptimeByGroup = useMemo<Record<string, UptimeDayPoint[]>>(() => {
     const map: Record<string, UptimeDayPoint[]> = {}
-    for (const perf of performances) {
-      map[perf.group] = buildUptimeSeries(props.model, perf.group)
+    for (const group of groups) {
+      map[group.group] = toGroupUptimeSeries(group)
     }
     return map
-  }, [performances, props.model])
+  }, [groups])
 
-  if (performances.length === 0) {
+  if (metricsQuery.isLoading || performances.length === 0) {
     return (
       <div className='text-muted-foreground rounded-lg border p-6 text-center text-sm'>
         {t('Performance data is not yet available for this model.')}
@@ -108,199 +201,146 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
     )
   }
 
-  const bestTtft = Math.min(...performances.map((p) => p.ttft_p50_ms))
-  const bestThroughput = Math.max(...performances.map((p) => p.throughput_tps))
-  const totalRequests = performances.reduce(
-    (s, p) => s + p.request_volume_24h,
-    0
-  )
-  const intent =
-    aggregated.uptime_pct >= 99.9
-      ? 'success'
-      : aggregated.uptime_pct >= 99
-        ? 'default'
-        : 'warning'
-
-  const headerCellClass =
-    'text-muted-foreground py-2 text-[10px] font-medium tracking-wider uppercase'
+  const tpsValues = performances
+    .map((p) => p.avg_tps)
+    .filter((value) => value > 0)
+  const avgTps =
+    tpsValues.length > 0
+      ? tpsValues.reduce((sum, value) => sum + value, 0) / tpsValues.length
+      : 0
+  const avgLatency = average(performances, 'avg_latency_ms')
+  const successRates = performances
+    .map((perf) => perf.success_rate)
+    .filter((value) => Number.isFinite(value))
+  const successRate =
+    successRates.length > 0
+      ? successRates.reduce((sum, value) => sum + value, 0) /
+        successRates.length
+      : 0
+  const incidentCount = uptimeSeries.reduce((s, p) => s + p.incidents, 0)
 
   return (
     <div className='flex flex-col gap-4'>
-      <div className='grid grid-cols-2 gap-2 lg:grid-cols-4'>
+      <div className='grid grid-cols-1 gap-2 sm:grid-cols-3'>
         <StatCard
           icon={Timer}
-          label={t('Best TTFT')}
-          value={formatLatency(bestTtft)}
-          hint={t('Lowest median first-token latency')}
+          label='TPS'
+          value={formatThroughput(avgTps)}
+          hint={t('Sustained tokens per second')}
         />
         <StatCard
-          icon={Gauge}
-          label={t('Peak throughput')}
-          value={formatThroughput(bestThroughput)}
-          hint={t('Across all groups')}
+          icon={Timer}
+          label={t('Average latency')}
+          value={formatLatency(avgLatency)}
         />
         <StatCard
           icon={HeartPulse}
-          label={t('Uptime (30d)')}
-          value={formatUptimePct(aggregated.uptime_pct)}
+          label={t('Success rate')}
+          value={formatUptimePct(successRate)}
           hint={
-            aggregated.incidents > 0
-              ? t('{{count}} incidents in the last 30 days', {
-                  count: aggregated.incidents,
+            incidentCount > 0
+              ? t('{{count}} incidents in the last 24 hours', {
+                  count: incidentCount,
                 })
-              : t('No incidents in the last 30 days')
+              : t('No incidents in the last 24 hours')
           }
-          intent={intent}
-        />
-        <StatCard
-          icon={TrendingUp}
-          label={t('Requests (24h)')}
-          value={COMPACT_NUMBER.format(totalRequests)}
-          hint={t('Aggregated across enabled groups')}
+          valueClassName={getSuccessRateTextClass(successRate)}
         />
       </div>
 
       <section>
         <SectionHeader
-          icon={Activity}
+          icon={HeartPulse}
           title={t('Per-group performance')}
-          description={t(
-            'TTFT percentiles, throughput, and 30-day uptime by group'
-          )}
+          description={t('Average latency, TTFT, TPS, and success rate')}
         />
-        <div className='overflow-x-auto rounded-lg border'>
-          <Table className='text-sm'>
-            <TableHeader>
-              <TableRow className='hover:bg-transparent'>
-                <TableHead className={headerCellClass}>{t('Group')}</TableHead>
-                <TableHead className={`${headerCellClass} text-right`}>
-                  {t('TTFT P50')}
-                </TableHead>
-                <TableHead className={`${headerCellClass} text-right`}>
-                  {t('TTFT P95')}
-                </TableHead>
-                <TableHead className={`${headerCellClass} text-right`}>
-                  {t('TTFT P99')}
-                </TableHead>
-                <TableHead className={`${headerCellClass} text-right`}>
-                  {t('Throughput')}
-                </TableHead>
-                <TableHead
-                  className={`${headerCellClass} min-w-[160px] text-left`}
-                >
-                  {t('Uptime (30d)')}
-                </TableHead>
-                <TableHead className={`${headerCellClass} text-right`}>
-                  {t('Requests / 24h')}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {performances.map((perf) => {
-                const isBestTtft = perf.ttft_p50_ms === bestTtft
-                const isBestTput = perf.throughput_tps === bestThroughput
-                return (
-                  <TableRow key={perf.group}>
-                    <TableCell className='py-2.5'>
-                      <GroupBadge group={perf.group} size='sm' />
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        'py-2.5 text-right font-mono',
-                        isBestTtft && 'text-emerald-600 dark:text-emerald-400'
-                      )}
-                    >
-                      {formatLatency(perf.ttft_p50_ms)}
-                    </TableCell>
-                    <TableCell className='text-muted-foreground py-2.5 text-right font-mono'>
-                      {formatLatency(perf.ttft_p95_ms)}
-                    </TableCell>
-                    <TableCell className='text-muted-foreground py-2.5 text-right font-mono'>
-                      {formatLatency(perf.ttft_p99_ms)}
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        'py-2.5 text-right font-mono',
-                        isBestTput &&
-                          perf.throughput_tps > 0 &&
-                          'text-emerald-600 dark:text-emerald-400'
-                      )}
-                    >
-                      {formatThroughput(perf.throughput_tps)}
-                    </TableCell>
-                    <TableCell className='py-2.5'>
-                      <UptimeSparkline
-                        size='sm'
-                        series={uptimeByGroup[perf.group] ?? []}
-                      />
-                    </TableCell>
-                    <TableCell className='text-muted-foreground py-2.5 text-right font-mono'>
-                      {COMPACT_NUMBER.format(perf.request_volume_24h)}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
-        </div>
+        <StaticDataTable
+          className='rounded-lg'
+          tableClassName='text-sm'
+          headerRowClassName={tableStyles.compactHeaderRow}
+          data={performances}
+          getRowKey={(perf) => perf.group}
+          columns={[
+            {
+              id: 'group',
+              header: t('Group'),
+              className: tableStyles.compactHeaderCell,
+              cellClassName: tableStyles.compactCell,
+              cell: (perf) => <GroupBadge group={perf.group} size='sm' />,
+            },
+            {
+              id: 'tps',
+              header: 'TPS',
+              className: tableStyles.compactHeaderCellRight,
+              cellClassName: tableStyles.compactNumericCell,
+              cell: (perf) => formatThroughput(perf.avg_tps),
+            },
+            {
+              id: 'ttft',
+              header: t('Average TTFT'),
+              className: tableStyles.compactHeaderCellRight,
+              cellClassName: tableStyles.compactNumericCell,
+              cell: (perf) => formatLatency(perf.avg_ttft_ms),
+            },
+            {
+              id: 'latency',
+              header: t('Average latency'),
+              className: tableStyles.compactHeaderCellRight,
+              cellClassName: tableStyles.compactMutedNumericCell,
+              cell: (perf) => formatLatency(perf.avg_latency_ms),
+            },
+            {
+              id: 'success',
+              header: t('Success rate'),
+              className: cn(tableStyles.compactHeaderCell, 'min-w-[180px]'),
+              cellClassName: tableStyles.compactCell,
+              cell: (perf) => (
+                <UptimeSparkline
+                  size='sm'
+                  series={uptimeByGroup[perf.group] ?? []}
+                />
+              ),
+            },
+          ]}
+        />
       </section>
 
       <section>
         <SectionHeader
           icon={Timer}
           title={t('Latency trend (last 24h)')}
-          description={t(
-            'Median time-to-first-token (TTFT) sampled hourly per group'
-          )}
+          description={t('Average TTFT')}
         />
         <LatencyTrendChart series={latencySeries} />
       </section>
 
-      {bestThroughput > 0 && (
-        <section>
-          <SectionHeader
-            icon={Gauge}
-            title={t('Throughput by group')}
-            description={t('Average tokens per second sustained per group')}
-          />
-          <ThroughputBarChart rows={performances} />
-        </section>
-      )}
-
       <section>
         <SectionHeader
           icon={HeartPulse}
-          title={t('Uptime (last 30 days)')}
+          title={t('Availability (last 24h)')}
           description={
-            aggregated.incidents > 0
+            incidentCount > 0
               ? t(
-                  'Daily uptime; {{incidents}} incidents totalling {{minutes}} minutes',
+                  'Request success rate; {{incidents}} incident buckets in the last 24 hours',
                   {
-                    incidents: aggregated.incidents,
-                    minutes: aggregated.outage_minutes,
+                    incidents: incidentCount,
                   }
                 )
-              : t('Daily uptime over the last 30 days')
+              : t('Request success rate sampled over the last 24 hours')
           }
           accent={
-            aggregated.incidents > 0 ? (
+            incidentCount > 0 ? (
               <span className='inline-flex items-center gap-1 text-amber-600 dark:text-amber-400'>
                 <AlertTriangle className='size-3.5' />
                 {t('{{count}} incidents', {
-                  count: aggregated.incidents,
+                  count: incidentCount,
                 })}
               </span>
             ) : null
           }
         />
-        <UptimeBarChart series={uptimeSeries} />
+        <UptimeTrendChart series={uptimeSeries} />
       </section>
-
-      <p className='text-muted-foreground/60 text-[11px] leading-relaxed'>
-        {t(
-          'Performance metrics shown here are simulated for preview purposes and will be replaced with live observability data once the backend integration is complete.'
-        )}
-      </p>
     </div>
   )
 }
