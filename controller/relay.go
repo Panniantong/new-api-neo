@@ -340,6 +340,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr.GetErrorCode() == types.ErrorCode("sub2_local_capacity_exhausted") {
 		return false
 	}
+	if openaiErr.GetErrorCode() == types.ErrorCode("sub2_no_available_accounts") {
+		return false
+	}
 	if retryTimes <= 0 {
 		return false
 	}

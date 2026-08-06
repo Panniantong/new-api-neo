@@ -20,3 +20,15 @@ func TestShouldRetryStopsAfterSub2ExhaustsInternalCapacityAttempts(t *testing.T)
 
 	require.False(t, shouldRetry(c, err, 2))
 }
+
+func TestShouldRetryStopsWhenSub2AccountPoolIsTemporarilyEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	err := types.WithOpenAIError(types.OpenAIError{
+		Type:    "api_error",
+		Code:    "sub2_no_available_accounts",
+		Message: "Service temporarily unavailable",
+	}, http.StatusServiceUnavailable)
+
+	require.False(t, shouldRetry(c, err, 2))
+}
