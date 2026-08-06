@@ -885,6 +885,21 @@ type OpenAIResponsesRequest struct {
 	Preset json.RawMessage `json:"preset,omitempty"`
 }
 
+// CloneForRelay isolates the few fields that relay conversion may mutate
+// without reflectively deep-copying the potentially very large RawMessage
+// payload. Raw payload fields are immutable throughout relay processing.
+func (r *OpenAIResponsesRequest) CloneForRelay() *OpenAIResponsesRequest {
+	if r == nil {
+		return nil
+	}
+	clone := *r
+	if r.Reasoning != nil {
+		reasoning := *r.Reasoning
+		clone.Reasoning = &reasoning
+	}
+	return &clone
+}
+
 func (r *OpenAIResponsesRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	var fileMeta = make([]*types.FileMeta, 0)
 	var texts = make([]string, 0)

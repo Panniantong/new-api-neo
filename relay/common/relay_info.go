@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type ThinkingContentInfo struct {
@@ -827,69 +828,54 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 		return jsonData, nil
 	}
 
-	var data map[string]interface{}
-	if err := common.Unmarshal(jsonData, &data); err != nil {
-		common.SysError("RemoveDisabledFields Unmarshal error :" + err.Error())
-		return jsonData, nil
-	}
-
-	// 默认移除 service_tier，除非明确允许（避免额外计费风险）
+	paths := make([]string, 0, 6)
 	if !channelOtherSettings.AllowServiceTier {
-		if _, exists := data["service_tier"]; exists {
-			delete(data, "service_tier")
-		}
+		paths = append(paths, "service_tier")
 	}
-
-	// 默认移除 inference_geo，除非明确允许（避免在未授权情况下透传数据驻留区域）
 	if !channelOtherSettings.AllowInferenceGeo {
-		if _, exists := data["inference_geo"]; exists {
-			delete(data, "inference_geo")
-		}
+		paths = append(paths, "inference_geo")
 	}
-
-	// 默认移除 speed，除非明确允许（避免意外切换 Claude 推理速度模式）
 	if !channelOtherSettings.AllowSpeed {
-		if _, exists := data["speed"]; exists {
-			delete(data, "speed")
-		}
+		paths = append(paths, "speed")
 	}
-
-	// 默认允许 store 透传，除非明确禁用（禁用可能影响 Codex 使用）
 	if channelOtherSettings.DisableStore {
-		if _, exists := data["store"]; exists {
-			delete(data, "store")
-		}
+		paths = append(paths, "store")
 	}
-
-	// 默认移除 safety_identifier，除非明确允许（保护用户隐私，避免向 OpenAI 报告用户信息）
 	if !channelOtherSettings.AllowSafetyIdentifier {
-		if _, exists := data["safety_identifier"]; exists {
-			delete(data, "safety_identifier")
-		}
+		paths = append(paths, "safety_identifier")
+	}
+	if !channelOtherSettings.AllowIncludeObfuscation {
+		paths = append(paths, "stream_options.include_obfuscation")
 	}
 
-	// 默认移除 stream_options.include_obfuscation，除非明确允许（避免关闭响应流混淆保护）
-	if !channelOtherSettings.AllowIncludeObfuscation {
-		if streamOptionsAny, exists := data["stream_options"]; exists {
-			if streamOptions, ok := streamOptionsAny.(map[string]interface{}); ok {
-				if _, includeExists := streamOptions["include_obfuscation"]; includeExists {
-					delete(streamOptions, "include_obfuscation")
-				}
-				if len(streamOptions) == 0 {
-					delete(data, "stream_options")
-				} else {
-					data["stream_options"] = streamOptions
+	result := jsonData
+	for _, path := range paths {
+		if !gjson.GetBytes(result, path).Exists() {
+			continue
+		}
+		updated, err := sjson.DeleteBytes(result, path)
+		if err != nil {
+			common.SysError("RemoveDisabledFields delete error: " + err.Error())
+			return jsonData, nil
+		}
+		result = updated
+		if path == "stream_options.include_obfuscation" {
+			streamOptions := gjson.GetBytes(result, "stream_options")
+			empty := streamOptions.IsObject()
+			streamOptions.ForEach(func(_, _ gjson.Result) bool {
+				empty = false
+				return false
+			})
+			if empty {
+				result, err = sjson.DeleteBytes(result, "stream_options")
+				if err != nil {
+					common.SysError("RemoveDisabledFields delete empty stream_options error: " + err.Error())
+					return jsonData, nil
 				}
 			}
 		}
 	}
-
-	jsonDataAfter, err := common.Marshal(data)
-	if err != nil {
-		common.SysError("RemoveDisabledFields Marshal error :" + err.Error())
-		return jsonData, nil
-	}
-	return jsonDataAfter, nil
+	return result, nil
 }
 
 func hasRemovableDisabledField(jsonData []byte, channelOtherSettings dto.ChannelOtherSettings) bool {
