@@ -24,6 +24,13 @@ https://github.com/QuantumNous/new-api
 Modified versions must not misrepresent the origin of the software and must
 mark their changes in accordance with AGPLv3 Section 7(c).
 
+==== Modifications ====
+
+Apple Router (branch `applerouter` of https://github.com/Panniantong/new-api-neo)
+is a modified version of new-api v1.0.0-rc.47. Changes: product name, logo,
+favicon, page title, and default homepage copy rebranded to "Apple Router".
+The upstream attribution and project link above are preserved in the UI footer.
+
 ==== Third-Party Notices ====
 
 This product includes third-party open source software. Copyright notices and

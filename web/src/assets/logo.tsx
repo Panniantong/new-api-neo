@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 export function Logo({ className, ...props }: SVGProps<SVGSVGElement>) {
   return (
     <svg
-      id='newapi-logo'
+      id='applerouter-logo'
       viewBox='0 0 24 24'
       xmlns='http://www.w3.org/2000/svg'
       height='24'
@@ -36,8 +36,11 @@ export function Logo({ className, ...props }: SVGProps<SVGSVGElement>) {
       className={cn('size-6', className)}
       {...props}
     >
-      <title>New API</title>
-      <path d='M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3' />
+      <title>Apple Router</title>
+      <circle cx='6' cy='18' r='2' />
+      <circle cx='18' cy='6' r='2' />
+      <path d='M8 18h3a5 5 0 0 0 5-5V8' />
+      <path d='M18 4c0-1.6 1.1-2.6 2.6-2.6' />
     </svg>
   )
 }
