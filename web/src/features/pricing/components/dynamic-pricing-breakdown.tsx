@@ -519,7 +519,7 @@ export function DynamicPricingBreakdown({
                     {!usageSchema && (
                       <Badge
                         variant='secondary'
-                        className='bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+                        className='bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
                       >
                         {tier.label || t('Default')}
                       </Badge>
@@ -638,7 +638,7 @@ export function DynamicPricingBreakdown({
                         {!usageSchema && (
                           <Badge
                             variant='secondary'
-                            className='bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+                            className='bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
                           >
                             {tier.label || t('Default')}
                           </Badge>

@@ -45,10 +45,10 @@ const ACCENT_CLASSES: Record<
   }
 > = {
   emerald: {
-    activeText: 'text-emerald-600 dark:text-emerald-400',
+    activeText: 'text-emerald-700 dark:text-emerald-400',
     activeBorder: 'border-emerald-500 dark:border-emerald-400',
     badge:
-      'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-400/10 dark:text-emerald-400',
+      'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-400',
   },
   amber: {
     activeText: 'text-amber-600 dark:text-amber-400',
@@ -57,10 +57,10 @@ const ACCENT_CLASSES: Record<
       'bg-amber-500/10 text-amber-600 dark:bg-amber-400/10 dark:text-amber-400',
   },
   blue: {
-    activeText: 'text-emerald-600 dark:text-emerald-400',
+    activeText: 'text-emerald-700 dark:text-emerald-400',
     activeBorder: 'border-emerald-500 dark:border-emerald-400',
     badge:
-      'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-400/10 dark:text-emerald-400',
+      'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-400',
   },
   violet: {
     activeText: 'text-rose-600 dark:text-rose-400',
@@ -504,7 +504,7 @@ function CodeLine(props: { children: ReactNode; indent?: number }) {
 
 function Command(props: { children: ReactNode }) {
   return (
-    <span className='font-medium text-emerald-600 dark:text-emerald-400'>
+    <span className='font-medium text-emerald-700 dark:text-emerald-400'>
       {props.children}
     </span>
   )
@@ -512,7 +512,7 @@ function Command(props: { children: ReactNode }) {
 
 function Flag(props: { children: ReactNode }) {
   return (
-    <span className='text-emerald-600 dark:text-emerald-400'>{props.children}</span>
+    <span className='text-emerald-700 dark:text-emerald-400'>{props.children}</span>
   )
 }
 
