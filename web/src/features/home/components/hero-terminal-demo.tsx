@@ -57,16 +57,16 @@ const ACCENT_CLASSES: Record<
       'bg-amber-500/10 text-amber-600 dark:bg-amber-400/10 dark:text-amber-400',
   },
   blue: {
-    activeText: 'text-blue-600 dark:text-blue-400',
-    activeBorder: 'border-blue-500 dark:border-blue-400',
+    activeText: 'text-emerald-600 dark:text-emerald-400',
+    activeBorder: 'border-emerald-500 dark:border-emerald-400',
     badge:
-      'bg-blue-500/10 text-blue-600 dark:bg-blue-400/10 dark:text-blue-400',
+      'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-400/10 dark:text-emerald-400',
   },
   violet: {
-    activeText: 'text-violet-600 dark:text-violet-400',
-    activeBorder: 'border-violet-500 dark:border-violet-400',
+    activeText: 'text-rose-600 dark:text-rose-400',
+    activeBorder: 'border-rose-500 dark:border-rose-400',
     badge:
-      'bg-violet-500/10 text-violet-600 dark:bg-violet-400/10 dark:text-violet-400',
+      'bg-rose-500/10 text-rose-600 dark:bg-rose-400/10 dark:text-rose-400',
   },
 }
 
@@ -512,13 +512,13 @@ function Command(props: { children: ReactNode }) {
 
 function Flag(props: { children: ReactNode }) {
   return (
-    <span className='text-blue-600 dark:text-blue-400'>{props.children}</span>
+    <span className='text-emerald-600 dark:text-emerald-400'>{props.children}</span>
   )
 }
 
 function Key(props: { children: ReactNode }) {
   return (
-    <span className='text-sky-700 dark:text-sky-300'>{props.children}</span>
+    <span className='text-teal-700 dark:text-teal-300'>{props.children}</span>
   )
 }
 
@@ -530,7 +530,7 @@ function StringText(props: { children: ReactNode }) {
 
 function NumberText(props: { children: ReactNode }) {
   return (
-    <span className='font-medium text-violet-600 dark:text-violet-300'>
+    <span className='font-medium text-rose-600 dark:text-rose-300'>
       {props.children}
     </span>
   )

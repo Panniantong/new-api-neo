@@ -37,10 +37,9 @@ export function Logo({ className, ...props }: SVGProps<SVGSVGElement>) {
       {...props}
     >
       <title>Apple Router</title>
-      <circle cx='6' cy='18' r='2' />
-      <circle cx='18' cy='6' r='2' />
-      <path d='M8 18h3a5 5 0 0 0 5-5V8' />
-      <path d='M18 4c0-1.6 1.1-2.6 2.6-2.6' />
+      <path d='M12 7.6c-1.6-1.1-4.9-1.3-6.2 1.4-1.2 2.5-.4 6.6 1.9 9.4 1.2 1.5 2.7 1.9 4.3 1.1 1.6.8 3.1.4 4.3-1.1 2.3-2.8 3.1-6.9 1.9-9.4-1.3-2.7-4.6-2.5-6.2-1.4z' />
+      <path d='M12 7.6c-.1-1.6.4-2.9 1.6-3.8' />
+      <path d='M9.6 16.2h1.2a2.2 2.2 0 0 0 2.2-2.2v-.6' />
     </svg>
   )
 }
